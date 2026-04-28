@@ -1,0 +1,936 @@
+##################################################################
+#  MEDIDISPENSE — COMPLETE SYSTEM PROMPT (YAML)
+#  Automatic Medicine Dispenser with Monitoring System
+#  Meru University of Science and Technology — EG209/109737/22
+##################################################################
+
+system:
+  name: MediDispense
+  version: "2.0.0"
+  description: >
+    Full-stack IoT platform for automatic medicine dispensing and
+    remote monitoring. Connects ESP32-based hardware dispensers to
+    a web dashboard for caregivers via LoRa + MQTT + REST API.
+  author: Antony Oyagi Ombati
+  university: Meru University of Science and Technology
+  department: Electrical and Electronics Engineering
+
+  tech_stack:
+    frontend:
+      framework: React 18 + Vite
+      ui_library: Tailwind CSS + shadcn/ui
+      state_management: Zustand
+      realtime: Socket.io-client + MQTT.js (WebSocket)
+      charts: Recharts
+      forms: React Hook Form + Zod
+      http_client: Axios
+      routing: React Router v6
+      auth: JWT stored in httpOnly cookie
+
+    backend:
+      runtime: Node.js 20 LTS
+      framework: Express.js 4
+      orm: Prisma 5
+      auth: JWT + bcrypt + refresh tokens
+      realtime: Socket.io + MQTT broker bridge
+      job_queue: BullMQ (Redis-backed)
+      validation: Zod
+      file_storage: Multer → local /uploads (or S3)
+      notifications:
+        sms: Africa's Talking API
+        email: Nodemailer + Gmail SMTP
+        push: Firebase Cloud Messaging
+
+    database:
+      primary: PostgreSQL 16
+      cache: Redis 7
+      migrations: Prisma Migrate
+      seed: Prisma seed script
+
+    iot_layer:
+      device: ESP32 (Heltec WiFi LoRa 32 V3)
+      communication_protocol: LoRa SX1262 → USB serial → Python bridge → MQTT
+      mqtt_broker: Eclipse Mosquitto 2.0
+      mqtt_over_websocket_port: 9001
+      realtime_sync: MQTT → backend → Socket.io → frontend
+
+    infrastructure:
+      containerization: Docker + Docker Compose
+      reverse_proxy: Nginx
+      os: Ubuntu 24.04 LTS
+      ci_cd: GitHub Actions
+
+##################################################################
+#  FOLDER STRUCTURE
+##################################################################
+
+project_structure:
+  root: medidispense/
+  directories:
+    - frontend/              # React app
+    - backend/               # Express API
+    - database/              # SQL init + seed files
+    - mqtt/                  # Mosquitto config + passwd
+    - lora_bridge/           # Python LoRa-to-MQTT bridge
+    - esp32_firmware/        # Arduino/PlatformIO firmware
+    - nginx/                 # Reverse proxy config
+    - docker-compose.yml
+    - docker-compose.dev.yml
+    - .env.example
+    - README.md
+
+##################################################################
+#  DOCKER SERVICES
+##################################################################
+
+docker_services:
+
+  frontend:
+    image: node:20-alpine → build → nginx:alpine
+    port: "3000:80"
+    env:
+      VITE_API_BASE_URL: http://localhost:4000/api/v1
+      VITE_SOCKET_URL: http://localhost:4000
+      VITE_MQTT_WS_URL: ws://localhost:9001
+    depends_on: [backend]
+
+  backend:
+    image: node:20-alpine
+    port: "4000:4000"
+    env:
+      NODE_ENV: production
+      PORT: 4000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: medidispense
+      DB_USER: mediadmin
+      DB_PASSWORD: Str0ngPass!2025
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: RedisPass!2025
+      MQTT_HOST: mqtt_broker
+      MQTT_PORT: 1883
+      MQTT_USERNAME: backend_service
+      MQTT_PASSWORD: MqttBack!2025
+      JWT_SECRET: superSecretJWT_MediDispense_2025!
+      JWT_EXPIRES_IN: 7d
+      REFRESH_TOKEN_SECRET: refreshSecret_2025!
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: 587
+      SMTP_USER: notifications@medidispense.co.ke
+      SMTP_PASS: your_smtp_password
+      AFRICASTALKING_API_KEY: your_key_here
+      AFRICASTALKING_USERNAME: medidispense
+      SMS_SENDER_ID: MediDisp
+      UPLOAD_PATH: /app/uploads
+      LOG_LEVEL: info
+    depends_on: [postgres, redis, mqtt_broker]
+
+  postgres:
+    image: postgres:16-alpine
+    port: "5432:5432"
+    env:
+      POSTGRES_DB: medidispense
+      POSTGRES_USER: mediadmin
+      POSTGRES_PASSWORD: Str0ngPass!2025
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql
+    healthcheck: pg_isready -U mediadmin -d medidispense
+
+  redis:
+    image: redis:7-alpine
+    port: "6379:6379"
+    command: >
+      redis-server --requirepass RedisPass!2025
+      --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck: redis-cli ping
+
+  mqtt_broker:
+    image: eclipse-mosquitto:2.0
+    ports:
+      - "1883:1883"   # MQTT TCP (ESP32 + backend)
+      - "9001:9001"   # MQTT WebSocket (frontend live feed)
+    volumes:
+      - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mqtt/passwd:/mosquitto/config/passwd
+
+  lora_bridge:
+    build: ./lora_bridge
+    privileged: true
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0   # LoRa USB receiver dongle
+    env:
+      SERIAL_PORT: /dev/ttyUSB0
+      BAUD_RATE: 115200
+      MQTT_HOST: mqtt_broker
+      MQTT_PORT: 1883
+      MQTT_USERNAME: lora_bridge
+      MQTT_PASSWORD: LoraPass!2025
+      MQTT_TOPIC_PREFIX: devices
+    depends_on: [mqtt_broker]
+
+  notification_worker:
+    build: ./backend (Dockerfile.worker)
+    env: inherits backend env (DB + Redis + SMTP + SMS)
+    depends_on: [redis, postgres]
+
+  pgadmin:
+    image: dpage/pgadmin4
+    port: "5050:80"
+    profile: dev    # only starts in dev mode
+    env:
+      PGADMIN_DEFAULT_EMAIL: admin@medidispense.co.ke
+      PGADMIN_DEFAULT_PASSWORD: PgAdmin!2025
+
+##################################################################
+#  DATABASE SCHEMA
+##################################################################
+
+database_schema:
+
+  enums:
+    user_role: [admin, caregiver, nurse, patient]
+    device_status: [online, offline, maintenance, unlinked]
+    dose_event: [DOSE_TAKEN, DOSE_MISSED, DISPENSE_FAIL, HEARTBEAT, REFILL]
+    dose_status: [CONFIRMED, NOT_CONFIRMED, NA, FAILED]
+    alert_type: [missed_dose, low_supply, device_offline, dispense_fail, unauthorized_access, refill_needed]
+    alert_severity: [info, warning, critical]
+    notification_channel: [sms, email, push, in_app]
+    notification_status: [pending, sent, failed, read]
+    gender_type: [male, female, other, prefer_not_to_say]
+
+  tables:
+
+    users:
+      description: Caregivers, nurses, admins who log into the dashboard
+      columns:
+        id: UUID PK default uuid_generate_v4()
+        full_name: VARCHAR(120) NOT NULL
+        email: VARCHAR(180) UNIQUE NOT NULL
+        phone: VARCHAR(20) UNIQUE
+        password_hash: TEXT NOT NULL
+        role: user_role DEFAULT caregiver
+        avatar_url: TEXT
+        is_active: BOOLEAN DEFAULT true
+        email_verified: BOOLEAN DEFAULT false
+        last_login_at: TIMESTAMPTZ
+        created_at: TIMESTAMPTZ DEFAULT NOW()
+        updated_at: TIMESTAMPTZ DEFAULT NOW()
+
+    patients:
+      description: Patients whose medication is being managed
+      columns:
+        id: UUID PK
+        full_name: VARCHAR(120) NOT NULL
+        date_of_birth: DATE NOT NULL
+        gender: gender_type NOT NULL
+        national_id: VARCHAR(30) UNIQUE
+        phone: VARCHAR(20)
+        email: VARCHAR(180)
+        address: TEXT
+        county: VARCHAR(80)
+        ward: VARCHAR(80)
+        next_of_kin_name: VARCHAR(120)
+        next_of_kin_phone: VARCHAR(20)
+        diagnoses: TEXT[]          # ['Hypertension', 'Diabetes T2']
+        allergies: TEXT[]
+        notes: TEXT
+        biometric_template: BYTEA  # encrypted fingerprint template
+        photo_url: TEXT
+        is_active: BOOLEAN DEFAULT true
+        created_by: UUID FK → users(id)
+        created_at: TIMESTAMPTZ
+        updated_at: TIMESTAMPTZ
+
+    patient_caregivers:
+      description: Many-to-many — which caregiver manages which patient
+      columns:
+        id: UUID PK
+        patient_id: UUID FK → patients(id) CASCADE
+        user_id: UUID FK → users(id) CASCADE
+        is_primary: BOOLEAN DEFAULT false
+        assigned_at: TIMESTAMPTZ DEFAULT NOW()
+      unique: [patient_id, user_id]
+
+    devices:
+      description: ESP32 dispenser hardware units
+      columns:
+        id: UUID PK
+        device_code: VARCHAR(20) UNIQUE  # e.g. MD001
+        label: VARCHAR(80)               # human-readable name
+        firmware_version: VARCHAR(20)
+        mac_address: VARCHAR(17) UNIQUE
+        lora_dev_eui: VARCHAR(32) UNIQUE
+        status: device_status DEFAULT unlinked
+        last_seen_at: TIMESTAMPTZ
+        battery_pct: SMALLINT (0-100)
+        pills_remaining: SMALLINT DEFAULT 0
+        signal_dbm: SMALLINT
+        rtc_synced: BOOLEAN DEFAULT false
+        location_lat: NUMERIC(9,6)
+        location_lng: NUMERIC(9,6)
+        notes: TEXT
+        registered_by: UUID FK → users(id)
+        created_at: TIMESTAMPTZ
+        updated_at: TIMESTAMPTZ
+
+    device_patient_links:
+      description: Links an ESP32 device to a patient (one active at a time)
+      columns:
+        id: UUID PK
+        device_id: UUID FK → devices(id) CASCADE
+        patient_id: UUID FK → patients(id) CASCADE
+        linked_by: UUID FK → users(id)
+        linked_at: TIMESTAMPTZ DEFAULT NOW()
+        unlinked_at: TIMESTAMPTZ   # NULL = currently active link
+        is_active: BOOLEAN DEFAULT true
+      rule: Only one active link per device at any time (enforced by partial unique index)
+
+    medications:
+      description: Medication catalogue
+      columns:
+        id: UUID PK
+        name: VARCHAR(120) NOT NULL
+        generic_name: VARCHAR(120)
+        dosage_form: VARCHAR(60)   # tablet, capsule, syrup
+        strength: VARCHAR(40)      # 500mg
+        manufacturer: VARCHAR(120)
+        notes: TEXT
+        created_at: TIMESTAMPTZ
+
+    prescriptions:
+      description: A patient's prescribed medication with dosing schedule
+      columns:
+        id: UUID PK
+        patient_id: UUID FK → patients(id) CASCADE
+        medication_id: UUID FK → medications(id)
+        prescribed_by: VARCHAR(120)     # doctor name
+        dose_quantity: SMALLINT DEFAULT 1
+        dose_times: TIME[]              # e.g. [07:00, 13:00, 19:00]
+        start_date: DATE NOT NULL
+        end_date: DATE
+        days_of_week: SMALLINT[]        # 0=Sun … 6=Sat, NULL=daily
+        is_active: BOOLEAN DEFAULT true
+        notes: TEXT
+        created_by: UUID FK → users(id)
+        created_at: TIMESTAMPTZ
+        updated_at: TIMESTAMPTZ
+
+    dose_events:
+      description: Every dispensing event logged by the ESP32 via LoRa/MQTT
+      columns:
+        id: UUID PK
+        device_id: UUID FK → devices(id)
+        patient_id: UUID FK → patients(id)
+        prescription_id: UUID FK → prescriptions(id)
+        event_type: dose_event NOT NULL
+        status: dose_status NOT NULL
+        scheduled_at: TIMESTAMPTZ
+        dispensed_at: TIMESTAMPTZ
+        confirmed_at: TIMESTAMPTZ
+        pills_dispensed: SMALLINT DEFAULT 1
+        pills_remaining_after: SMALLINT
+        biometric_id: VARCHAR(40)       # fingerprint ID matched on device
+        lora_packet_raw: TEXT           # raw LoRa payload for audit
+        rssi: SMALLINT
+        snr: NUMERIC(5,2)
+        created_at: TIMESTAMPTZ DEFAULT NOW()
+
+    alerts:
+      description: System-generated alerts for missed doses, low supply, etc.
+      columns:
+        id: UUID PK
+        patient_id: UUID FK → patients(id)
+        device_id: UUID FK → devices(id)
+        dose_event_id: UUID FK → dose_events(id)
+        alert_type: alert_type NOT NULL
+        severity: alert_severity NOT NULL
+        title: VARCHAR(200) NOT NULL
+        message: TEXT NOT NULL
+        is_resolved: BOOLEAN DEFAULT false
+        resolved_by: UUID FK → users(id)
+        resolved_at: TIMESTAMPTZ
+        created_at: TIMESTAMPTZ DEFAULT NOW()
+
+    notifications:
+      description: Outbound SMS/email/push messages sent to caregivers
+      columns:
+        id: UUID PK
+        alert_id: UUID FK → alerts(id)
+        user_id: UUID FK → users(id)
+        channel: notification_channel NOT NULL
+        recipient: VARCHAR(200)         # phone or email address
+        subject: VARCHAR(200)
+        body: TEXT NOT NULL
+        status: notification_status DEFAULT pending
+        sent_at: TIMESTAMPTZ
+        error_message: TEXT
+        retry_count: SMALLINT DEFAULT 0
+        created_at: TIMESTAMPTZ
+
+    audit_logs:
+      description: Immutable audit trail for compliance
+      columns:
+        id: UUID PK
+        user_id: UUID FK → users(id)
+        action: VARCHAR(100) NOT NULL   # CREATE_PATIENT, LINK_DEVICE, etc.
+        entity_type: VARCHAR(60)
+        entity_id: UUID
+        old_values: JSONB
+        new_values: JSONB
+        ip_address: INET
+        user_agent: TEXT
+        created_at: TIMESTAMPTZ DEFAULT NOW()
+
+    refresh_tokens:
+      description: JWT refresh tokens for session management
+      columns:
+        id: UUID PK
+        user_id: UUID FK → users(id) CASCADE
+        token_hash: TEXT UNIQUE NOT NULL
+        expires_at: TIMESTAMPTZ NOT NULL
+        revoked_at: TIMESTAMPTZ
+        created_at: TIMESTAMPTZ DEFAULT NOW()
+
+##################################################################
+#  REST API ROUTES
+##################################################################
+
+api:
+  base_path: /api/v1
+  authentication: Bearer JWT (all routes except /auth/*)
+
+  modules:
+
+    auth:
+      prefix: /auth
+      routes:
+        - POST /register         → create new user account
+        - POST /login            → returns access_token + refresh_token
+        - POST /logout           → revoke refresh token
+        - POST /refresh          → exchange refresh_token for new access_token
+        - POST /forgot-password  → send reset email
+        - POST /reset-password   → set new password using reset token
+        - GET  /me               → get current logged-in user profile
+        - PATCH /me              → update profile / avatar
+
+    users:
+      prefix: /users
+      roles_required: [admin]
+      routes:
+        - GET    /              → list all users (paginated)
+        - POST   /              → create user
+        - GET    /:id           → get user by id
+        - PATCH  /:id           → update user
+        - DELETE /:id           → deactivate user
+        - PATCH  /:id/role      → change user role
+
+    patients:
+      prefix: /patients
+      roles_required: [admin, caregiver, nurse]
+      routes:
+        - GET    /              → list patients (paginated, filter by caregiver)
+        - POST   /              → create patient (with diagnoses, schedule)
+        - GET    /:id           → get patient detail
+        - PATCH  /:id           → update patient info
+        - DELETE /:id           → deactivate patient
+        - GET    /:id/adherence → weekly/monthly adherence report
+        - GET    /:id/timeline  → full dose history timeline
+        - GET    /:id/alerts    → all alerts for this patient
+        - POST   /:id/caregivers       → assign caregiver to patient
+        - DELETE /:id/caregivers/:uid  → remove caregiver assignment
+        - POST   /:id/biometric        → upload/update fingerprint template
+
+    prescriptions:
+      prefix: /prescriptions
+      routes:
+        - GET    /patient/:patientId  → list prescriptions for a patient
+        - POST   /                    → create prescription
+        - GET    /:id                 → get prescription
+        - PATCH  /:id                 → update schedule or end date
+        - DELETE /:id                 → deactivate prescription
+
+    devices:
+      prefix: /devices
+      routes:
+        - GET    /              → list all devices
+        - POST   /              → register new ESP32 device
+        - GET    /:id           → device details + current status
+        - PATCH  /:id           → update device label/notes
+        - DELETE /:id           → unregister device
+        - POST   /:id/link      → link device to patient
+          body: { patient_id: UUID }
+        - POST   /:id/unlink    → unlink device from patient
+        - GET    /:id/telemetry → latest telemetry (pills, signal, battery)
+        - POST   /:id/schedule  → push updated dose schedule to device via MQTT
+        - POST   /:id/test-buzz → send test alert to device buzzer/LED via MQTT
+        - GET    /:id/logs      → raw LoRa packet logs
+
+    dose_events:
+      prefix: /events
+      routes:
+        - GET    /              → all events (filter: patient, device, date range)
+        - GET    /:id           → single event detail
+        - GET    /export        → CSV/PDF export of dose history
+
+    alerts:
+      prefix: /alerts
+      routes:
+        - GET    /              → list alerts (filter: severity, resolved, patient)
+        - GET    /:id           → single alert
+        - PATCH  /:id/resolve   → mark alert as resolved
+
+    notifications:
+      prefix: /notifications
+      routes:
+        - GET    /              → list notifications for current user
+        - PATCH  /:id/read      → mark notification as read
+        - POST   /test-sms      → send test SMS (admin only)
+
+    dashboard:
+      prefix: /dashboard
+      routes:
+        - GET    /summary       → total patients, devices online, today's adherence rate
+        - GET    /adherence     → system-wide adherence chart data (7d / 30d)
+        - GET    /recent-events → last 20 dose events across all patients
+
+    medications:
+      prefix: /medications
+      routes:
+        - GET    /              → list medication catalogue
+        - POST   /              → add medication
+        - GET    /:id           → get medication
+        - PATCH  /:id           → update
+        - DELETE /:id           → delete
+
+##################################################################
+#  MQTT TOPICS
+##################################################################
+
+mqtt:
+  broker: Eclipse Mosquitto 2.0
+  auth: username/password per client (see mqtt/passwd)
+
+  topic_schema:
+    device_telemetry:
+      topic: "devices/{device_code}/telemetry"
+      direction: ESP32 → broker → backend
+      payload_example:
+        device_id: MD001
+        date: "20260427"
+        time: "0900"
+        event_type: DOSE_TAKEN
+        status: CONFIRMED
+        pills_remaining: 15
+        biometric_id: FP_003
+        rssi: -85
+        snr: 9.2
+
+    device_heartbeat:
+      topic: "devices/{device_code}/heartbeat"
+      direction: ESP32 → broker → backend
+      interval: every 60 minutes
+      payload_example:
+        device_id: MD001
+        battery_pct: 92
+        pills_remaining: 15
+        rtc_synced: true
+        uptime_seconds: 3600
+
+    device_commands:
+      topic: "devices/{device_code}/commands"
+      direction: backend → broker → ESP32
+      commands:
+        - UPDATE_SCHEDULE   # push new dose times
+        - TEST_BUZZ         # trigger test alert
+        - REBOOT            # restart device
+        - SET_TIME          # sync RTC
+        - REQUEST_STATUS    # request immediate telemetry
+
+    device_ack:
+      topic: "devices/{device_code}/ack"
+      direction: ESP32 → broker → backend
+      description: Acknowledgement for received commands
+
+    system_alerts:
+      topic: "system/alerts"
+      direction: backend → broker → frontend (via WebSocket)
+      description: Real-time alert broadcast to all dashboard clients
+
+  clients:
+    - id: esp32_{device_code}   role: publisher (telemetry + heartbeat)
+    - id: backend_service       role: subscriber (all device topics)
+    - id: lora_bridge           role: publisher (relays LoRa serial → MQTT)
+    - id: frontend_ws_{uid}     role: subscriber (system/alerts, device telemetry)
+
+##################################################################
+#  ESP32 FIRMWARE SPEC
+##################################################################
+
+esp32_firmware:
+  platform: PlatformIO + Arduino framework
+  board: Heltec WiFi LoRa 32 V3
+  libraries:
+    - LoRa (Sandeep Mistry)
+    - RTClib (Adafruit DS3231)
+    - Adafruit Fingerprint Sensor Library
+    - ESP32Servo
+    - ArduinoJson
+    - U8g2 (OLED display)
+    - Wire (I2C)
+
+  config_file: esp32_firmware/config.h
+  parameters:
+    device_code: MD001
+    lora_frequency: 868E6       # 868 MHz (East Africa)
+    lora_bandwidth: 125E3
+    lora_spreading_factor: 9
+    lora_coding_rate: 5
+    lora_tx_power: 20
+    rtc_i2c_address: "0x68"
+    fingerprint_uart: Serial2
+    fingerprint_baud: 57600
+    servo_pin: GPIO_13
+    ir_sensor_pin: GPIO_34
+    buzzer_pin: GPIO_25
+    led_red_pin: GPIO_26
+    led_green_pin: GPIO_27
+    confirm_button_pin: GPIO_0
+    dose_confirm_timeout_sec: 900    # 15 min
+    pill_detect_timeout_sec: 10
+    heartbeat_interval_min: 60
+
+  operational_flow:
+    boot:
+      1: Initialize Serial, I2C, SPI
+      2: Load config from EEPROM/SPIFFS
+      3: Connect RTC — load schedule
+      4: Initialize fingerprint scanner
+      5: Initialize OLED — show next dose time
+      6: Await scheduled dose time
+
+    dose_cycle:
+      1: Alarm fires from RTC
+      2: OLED shows "Please scan fingerprint"
+      3: Buzzer + LED alert
+      4: Verify fingerprint (3 attempts max)
+      5: Activate servo — dispense 1 pill
+      6: IR sensor confirms pill dropped (10 sec timeout)
+      7: Patient presses confirm button (15 min timeout)
+      8: Log event locally (SPIFFS)
+      9: Transmit LoRa packet to receiver
+      10: Wait for next scheduled dose
+
+    lora_packet_format: "MD001,20260427,0900,DOSE_TAKEN,CONFIRMED,15"
+    packet_fields: [device_id, date_YYYYMMDD, time_HHMM, event_type, status, pills_remaining]
+    packet_max_bytes: 50
+
+##################################################################
+#  LORA BRIDGE (Python Service)
+##################################################################
+
+lora_bridge:
+  language: Python 3.11
+  file: lora_bridge/main.py
+  dependencies:
+    - pyserial==3.5
+    - paho-mqtt==1.6.1
+    - python-dotenv==1.0.0
+    - loguru==0.7.0
+
+  logic:
+    1: Open serial port (/dev/ttyUSB0 at 115200 baud)
+    2: Read incoming LoRa line (newline-terminated string)
+    3: Parse CSV fields [device_id, date, time, event, status, pills]
+    4: Publish JSON payload to MQTT topic devices/{device_id}/telemetry
+    5: Log raw packet to file for audit
+    6: Reconnect automatically on serial or MQTT disconnect
+
+##################################################################
+#  FRONTEND PAGES & COMPONENTS
+##################################################################
+
+frontend:
+  pages:
+
+    auth:
+      - /login               → LoginPage (email + password)
+      - /forgot-password     → ForgotPasswordPage
+      - /reset-password      → ResetPasswordPage
+
+    dashboard:
+      - /                    → DashboardPage
+          components:
+            - SummaryMetrics (patients, devices online, today's adherence)
+            - AdherenceChart (7-day bar chart, Recharts)
+            - RecentEventsTable (last 20 dose events)
+            - ActiveAlertsPanel (missed doses, low supply)
+            - DeviceStatusGrid (online/offline ESP32 units)
+
+    patients:
+      - /patients                 → PatientListPage (searchable, paginated table)
+      - /patients/new             → CreatePatientPage
+          form_fields:
+            - full_name, date_of_birth, gender, national_id
+            - phone, email, address, county, ward
+            - next_of_kin_name, next_of_kin_phone
+            - diagnoses (multi-select), allergies
+            - notes, photo upload
+      - /patients/:id             → PatientDetailPage
+          tabs:
+            - Overview (demographics + active prescriptions)
+            - Dose Timeline (calendar heatmap + event list)
+            - Adherence Report (charts by week/month)
+            - Linked Device (device card + unlink button)
+            - Alerts (all alerts for this patient)
+            - Caregivers (assigned caregivers list)
+      - /patients/:id/edit        → EditPatientPage
+
+    devices:
+      - /devices                  → DeviceListPage (status badges, search)
+      - /devices/new              → RegisterDevicePage
+          form_fields:
+            - device_code, label, mac_address, lora_dev_eui
+            - firmware_version, notes
+      - /devices/:id              → DeviceDetailPage
+          sections:
+            - TelemetryCard (signal, battery, pills, last seen)
+            - LinkedPatientCard (patient name + unlink button)
+            - LinkPatientForm (search + link patient if unlinked)
+            - CommandPanel (Test Buzz, Push Schedule, Reboot, Sync RTC)
+            - LiveLogFeed (real-time MQTT messages via WebSocket)
+            - LoRaPacketTable (raw packet history)
+
+    prescriptions:
+      - /patients/:id/prescriptions/new → CreatePrescriptionPage
+          form_fields:
+            - medication (searchable select)
+            - dose_quantity
+            - dose_times (multi time-picker)
+            - start_date, end_date
+            - days_of_week (checkboxes)
+            - notes
+
+    alerts:
+      - /alerts                   → AlertsPage (filter by severity/resolved/patient)
+
+    reports:
+      - /reports                  → ReportsPage
+          features:
+            - Adherence by patient (date range picker)
+            - Missed doses heatmap
+            - Device uptime report
+            - Export to CSV / PDF
+
+    settings:
+      - /settings/profile         → UserProfilePage
+      - /settings/users           → UserManagementPage (admin only)
+      - /settings/notifications   → NotificationPreferencesPage
+          options:
+            - Enable SMS alerts
+            - Enable email alerts
+            - Missed dose threshold (minutes before alert)
+            - Low supply threshold (pills count)
+
+  realtime_features:
+    - Live dose event feed (MQTT WebSocket → Socket.io)
+    - Device online/offline indicator updates
+    - New alert toast notifications
+    - Dashboard metrics auto-refresh every 30 seconds
+
+##################################################################
+#  NOTIFICATION WORKER JOBS
+##################################################################
+
+notification_worker:
+  queue_backend: BullMQ + Redis
+  jobs:
+
+    missed_dose_alert:
+      trigger: dose event not received within 15 min of scheduled time
+      actions:
+        - Create alert record (severity: critical)
+        - Send SMS to primary caregiver via Africa's Talking
+        - Send email to assigned caregivers
+        - Push in-app notification via Socket.io
+
+    low_supply_warning:
+      trigger: pills_remaining <= 10 (configurable per patient)
+      actions:
+        - Create alert record (severity: warning)
+        - Send SMS + email to caregiver
+
+    device_offline:
+      trigger: no heartbeat received for > 2 hours
+      actions:
+        - Create alert record (severity: warning)
+        - Notify caregivers of affected patient
+
+    daily_adherence_report:
+      trigger: cron 0 20 * * * (8 PM daily)
+      actions:
+        - Compute daily adherence % per patient
+        - Email summary report to all caregivers
+
+##################################################################
+#  ADDITIONAL FEATURES
+##################################################################
+
+additional_features:
+
+  biometric_enrollment:
+    description: Enroll patient fingerprint via admin panel
+    flow:
+      1: Caregiver opens patient profile → Biometric tab
+      2: Click "Start Enrollment"
+      3: Backend sends ENROLL command to device via MQTT
+      4: Patient places finger on scanner 3 times
+      5: Template stored on device EEPROM + encrypted copy uploaded to DB
+
+  multi_device_support:
+    description: One patient can be reassigned to a different device
+    flow:
+      1: Unlink current device (keeps dose history)
+      2: Link new device
+      3: Backend pushes current medication schedule to new device via MQTT
+
+  offline_operation:
+    description: Device works without network for up to 30 days
+    mechanism:
+      - Schedule stored in device SPIFFS flash
+      - Events buffered in SPIFFS (up to 500 events)
+      - When LoRa signal restored, buffered events uploaded in order
+      - RTC battery backup maintains timing during power outage
+
+  adherence_analytics:
+    metrics:
+      - daily_adherence_pct: (doses_taken / doses_scheduled) * 100
+      - weekly_streak: consecutive days with >=80% adherence
+      - missed_dose_pattern: most commonly missed time slot
+      - best_adherence_day: day of week with highest adherence
+    export_formats: [CSV, PDF, JSON]
+
+  role_based_access_control:
+    admin:
+      - Full access to all features
+      - User management
+      - Device registration
+      - View audit logs
+    caregiver:
+      - Create / edit patients assigned to them
+      - View linked devices
+      - Resolve alerts
+      - View reports for their patients
+    nurse:
+      - View patients and dose events
+      - Resolve alerts
+      - Cannot create patients or manage devices
+    patient:
+      - View own dose history (mobile-friendly view)
+      - Cannot access other patients' data
+
+  audit_trail:
+    logged_actions:
+      - CREATE_PATIENT, UPDATE_PATIENT, DELETE_PATIENT
+      - LINK_DEVICE, UNLINK_DEVICE, REGISTER_DEVICE
+      - CREATE_PRESCRIPTION, UPDATE_PRESCRIPTION
+      - ASSIGN_CAREGIVER, REMOVE_CAREGIVER
+      - LOGIN, LOGOUT, FAILED_LOGIN
+      - RESOLVE_ALERT, EXPORT_REPORT
+    stored_fields: [user_id, action, entity, old_values, new_values, ip, timestamp]
+
+  security:
+    - Passwords hashed with bcrypt (12 rounds)
+    - JWT access tokens expire in 7 days
+    - Refresh tokens expire in 30 days, stored hashed in DB
+    - Rate limiting on /auth routes (10 req/min per IP)
+    - CORS restricted to frontend origin
+    - Helmet.js HTTP security headers
+    - MQTT clients require username + password
+    - Fingerprint templates AES-256 encrypted at rest
+    - All API inputs validated with Zod schemas
+    - SQL injection protection via Prisma parameterized queries
+
+##################################################################
+#  MQTT MOSQUITTO CONFIG
+##################################################################
+
+mosquitto_config:
+  file: mqtt/mosquitto.conf
+  content:
+    listener_1883:
+      port: 1883
+      protocol: mqtt
+    listener_9001:
+      port: 9001
+      protocol: websockets
+    auth:
+      allow_anonymous: false
+      password_file: /mosquitto/config/passwd
+    persistence:
+      persistence: true
+      persistence_location: /mosquitto/data/
+    logging:
+      log_dest: file /mosquitto/log/mosquitto.log
+      log_type: [error, warning, notice, information]
+
+  mqtt_users:
+    - username: backend_service    password: MqttBack!2025
+    - username: lora_bridge        password: LoraPass!2025
+    - username: esp32_MD001        password: Esp32Pass!2025
+    - username: frontend_ws        password: FrontendWs!2025
+
+##################################################################
+#  GETTING STARTED
+##################################################################
+
+getting_started:
+
+  prerequisites:
+    - Docker Desktop (Windows/macOS) or Docker Engine 24+ (Linux)
+    - Docker Compose v2.20+
+    - Git
+    - Node.js 20 LTS (for local dev without Docker)
+    - Python 3.11+ (for LoRa bridge local dev)
+    - PlatformIO (for ESP32 firmware)
+
+  steps:
+    1_clone:
+      command: git clone https://github.com/your-org/medidispense.git && cd medidispense
+
+    2_env:
+      command: cp .env.example .env
+      note: Edit .env with your SMTP credentials and Africa's Talking API key
+
+    3_build_and_start:
+      command: docker-compose up --build -d
+      note: First build takes 3-5 minutes
+
+    4_run_migrations:
+      command: docker-compose exec backend npx prisma migrate deploy
+
+    5_seed_database:
+      command: docker-compose exec backend npx prisma db seed
+
+    6_access:
+      dashboard: http://localhost:3000
+      api_docs: http://localhost:4000/api/v1/docs
+      pgadmin: http://localhost:5050   (dev profile only)
+
+    7_esp32:
+      1: Open esp32_firmware/ in PlatformIO
+      2: Edit config.h — set device_code and LoRa frequency
+      3: Flash firmware to Heltec WiFi LoRa 32 V3
+      4: Plug LoRa USB receiver into server USB port
+      5: Verify /dev/ttyUSB0 is detected, restart lora_bridge service
+
+    8_default_credentials:
+      email: admin@medidispense.co.ke
+      password: Admin!2025
+      note: Change immediately after first login
+
+  dev_mode:
+    command: docker-compose -f docker-compose.yml -f docker-compose.dev.yml --profile dev up
+    extras: pgadmin, hot-reload frontend, verbose backend logging
